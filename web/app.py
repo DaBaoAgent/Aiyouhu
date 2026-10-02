@@ -72,6 +72,10 @@ PROFILES_DIR = PROJECT_ROOT / "profiles"
 SKILLS_DIR = PROJECT_ROOT / "skills"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
+# 置顶技能：在技能库列表中排最前（与 easel/commands/skill.py 的 CLI 列表保持一致）
+# 顺序即置顶区展示顺序（sanguo 最前）。
+PINNED_SKILLS = ("sanguo", "koubo")
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 REACT_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 OPENCLAW_PROFILE = "easel"
@@ -101,9 +105,13 @@ THINKING_LEVEL = (os.environ.get("EASEL_THINKING_LEVEL", "").strip() or "medium"
 
 # gateway 进程把原始事件流（token/thinking/收尾）写到的**单个共享文件**。
 # 关键：`openclaw agent` 只是瘦客户端，没有 --raw-stream 标志——只有常驻 gateway 按它自己
-# 的 OPENCLAW_RAW_STREAM/OPENCLAW_RAW_STREAM_PATH 写这个文件（见 scripts/gateway.sh）。
-# web 侧 tail 它做流式；默认值必须与 gateway.sh 里 EASEL_RAW_STREAM_PATH 的默认一致。
-SHARED_RAW_STREAM = Path(os.environ.get("EASEL_RAW_STREAM_PATH", "/tmp/easel-raw-stream.jsonl"))
+# 的 OPENCLAW_RAW_STREAM/OPENCLAW_RAW_STREAM_PATH 写这个文件（见 scripts/gateway.sh / gateway.ps1）。
+# web 侧 tail 它做流式；默认路径=项目内 outputs/_sessions/raw-stream.jsonl，与两侧 gateway 脚本一致
+# （Windows 下原 /tmp 默认按当前盘符解析，易与 gateway 实际写的位置错位 → 思考流永远空）。
+SHARED_RAW_STREAM = Path(
+    os.environ.get("EASEL_RAW_STREAM_PATH", "").strip()
+    or (PROJECT_ROOT / "outputs" / "_sessions" / "raw-stream.jsonl")
+)
 
 
 class _GatewayHttpProc:
@@ -594,7 +602,9 @@ def get_skills() -> list[dict]:
     result = []
     sd = SKILLS_DIR / 'openclaw'
     if sd.is_dir():
-        for d in sorted(sd.iterdir()):
+        for d in sorted(sd.iterdir(),
+                        key=lambda p: (0, PINNED_SKILLS.index(p.name)) if p.name in PINNED_SKILLS
+                        else (1, p.name)):
             if d.is_dir() and (d / 'SKILL.md').is_file():
                 desc, layer, _ = _parse_skill_md(d / 'SKILL.md')
                 needs_api = d.name in SKILL_API_REQUIREMENTS
@@ -2454,6 +2464,11 @@ async def api_chat_stream(req: ChatRequest):
                             if isinstance(d.get("error"), dict):   # 200 里夹错误对象：不能当正常流吞掉
                                 to_client("error", f"❌ 网关返回错误：{str(d['error'])[:160]}")
                                 return
+                            # SSE 首 chunk 的 id == gateway 的 runId（chatcmpl_…）：作为 raw 流
+                            # 闩锁的权威值（防并发会话串台；见 _handle 的 is_http 分支）。
+                            _rid = d.get("id")
+                            if _rid and not run_info.get("run_id"):
+                                run_info["run_id"] = _rid
                             delta = (d.get("choices") or [{}])[0].get("delta") or {}
                             # 思考流的两个可能来源，先到先得（`sse_thinking` 闩锁，防两路都来时重复）：
                             # ① 这里的 reasoning 增量 —— openclaw 2026.6.11 的 chat/completions
@@ -2671,8 +2686,14 @@ async def api_chat_stream(req: ChatRequest):
                 except Exception:
                     pass
                 return
-            # 首个带 runId 的事件闩锁本轮 run（之后 _raw_event_for_run 只放行这个 run）。
+            # runId 闩锁：HTTP 模式下只认 SSE 首 chunk 的 id（== gateway runId，权威值）。
+            # 防并发串台——共享 raw 文件里，别家会话/后台任务（如 skill-workshop-review）
+            # 的事件可能先于自己的出现在本轮 offset 之后；"首事件闩锁"会锁错、把别人的
+            # 思考显示给自己（实测：并发时思考面板串到别会话）。SSE id 到达前（毫秒级）
+            # 直接丢弃；CLI 路径没有 SSE，仍用首事件闩锁。
             if run_info["run_id"] is None:
+                if is_http:
+                    return
                 rid = o.get("runId")
                 if rid is None:
                     return          # 还没拿到 runId，等下一条带 runId 的事件再闩锁
@@ -2684,6 +2705,11 @@ async def api_chat_stream(req: ChatRequest):
                 run_info["last_ev"] = ev
             if ev == "assistant_message_end":
                 run_info["saw_message_end"] = True
+                # 完整思考（权威版）：delta 流存在乱序/错位（OpenClaw known issue），
+                # 收尾时用这份全文覆盖前端已显示的思考（thinking_final 事件）。
+                _rt = o.get("rawThinking")
+                if _rt:
+                    run_info.setdefault("final_thinking_parts", []).append(str(_rt))
             if not delta:
                 return
             if ev == "assistant_text_stream" and et == "text_delta":
@@ -2783,6 +2809,11 @@ async def api_chat_stream(req: ChatRequest):
                 elif item["t"] == "question":
                     to_client("question", item["text"])
             rc = proc.poll()
+            # 思考流收尾：delta 流质量不可靠，用 message_end 的完整 rawThinking 覆盖一次
+            #（前端把 thinking_final 处理为"替换"而非追加）。
+            _parts = run_info.get("final_thinking_parts")
+            if _parts:
+                to_client("thinking_final", "\n\n".join(_parts))
             # 等 stdout 读完（stopReason 行在进程收尾时才打印，避免 _tail 先发 SENTINEL 时漏读）
             if stdout_fut is not None:
                 try:

@@ -21,7 +21,7 @@ interface ChatPageProps {
   onQuestionAnswered?: (questionId: string) => void;   // 某道问答题提交成功（App 记录答过，重放不再出现）
 }
 
-// 空态推荐（贴合 Easel 社媒创作场景）
+// 空态推荐（贴合 AINSNBOT 社媒创作场景）
 const SUGGESTIONS = [
   { icon: '🔥', title: '蹭个热点', prompt: '看看现在微博和抖音有什么热搜，挑几个适合我做二创的选题' },
   { icon: '✍️', title: '写小红书文案', prompt: '帮我写一条小红书种草文案，主题先问我' },
@@ -171,9 +171,8 @@ export default function ChatPage({ session, stream, onSend, onStop, onResend, on
     return (
       <div className="chat-page">
         <div className="chat-hero">
-          <div className="chat-hero-brand">
-            <img src="./static/easel-icon-transparent.png" alt="" />
-            <span>Easel</span>
+          <div className="chat-hero-logo">
+            <img src="./static/ainsnbot-logo-light.png" alt="AINSNBOT" />
           </div>
           <h1 className="chat-hero-title">{greeting()}</h1>
           <p className="chat-hero-sub">从选题到发布，一站式帮你把想法做成能发的内容。</p>

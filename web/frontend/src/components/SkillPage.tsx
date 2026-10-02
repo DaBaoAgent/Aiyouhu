@@ -27,6 +27,9 @@ const LAYERS: LayerMeta[] = [
 const LAYER_META: Record<string, LayerMeta> = Object.fromEntries(LAYERS.map((l) => [l.key, l]));
 const OTHER: LayerMeta = { key: 'other', label: '其他', Icon: IconLayers, color: 'var(--layer-general)' };
 
+// 置顶技能：无论属于哪一层，都在技能库列表最上方单独成区。数组顺序=展示顺序。
+const PINNED_SKILLS: string[] = ['sanguo', 'koubo'];
+
 // 按 skill 名关键词映射线性图标（无匹配退回层图标）
 function iconFor(name: string, LayerIcon: IconC): IconC {
   const n = name.toLowerCase();
@@ -71,9 +74,17 @@ export default function SkillPage({ persona }: SkillPageProps) {
       s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q) || displayName(s.name).toLowerCase().includes(q));
   }, [skills, query]);
 
+  const pinned = useMemo(
+    () => PINNED_SKILLS
+      .map((n) => filtered.find((s) => s.name === n))
+      .filter((s): s is SkillItem => Boolean(s)),
+    [filtered],
+  );
+
   const grouped = useMemo(() => {
     const g: Record<string, SkillItem[]> = {};
     for (const s of filtered) {
+      if (PINNED_SKILLS.includes(s.name)) continue;
       const key = LAYER_META[s.layer] ? s.layer : 'other';
       (g[key] ||= []).push(s);
     }
@@ -112,6 +123,42 @@ export default function SkillPage({ persona }: SkillPageProps) {
             <div className="empty-icon"><IconSearch size={40} /></div>
             <p>没有匹配「{query}」的技能</p>
           </div>
+        )}
+
+        {pinned.length > 0 && (
+          <section>
+            <div className="section-title">
+              <span className="section-ic" style={{ color: 'var(--accent, #e8b64c)' }}>★</span>
+              置顶
+              <span style={{ color: 'var(--text-tertiary)', fontWeight: 500 }}>· {pinned.length}</span>
+            </div>
+            <div className="skill-grid">
+              {pinned.map((s) => {
+                const meta = LAYER_META[s.layer] || OTHER;
+                const Icon = iconFor(s.name, meta.Icon);
+                const alert = s.needsApi && !s.apiConfigured;
+                return (
+                  <div
+                    key={s.name}
+                    className="card card-hover skill-card"
+                    style={{ ['--layer-color' as string]: meta.color }}
+                    onClick={() => setSelected(s.name)}
+                  >
+                    {alert && <div className="skill-card-alert" title="需要配置 API key">!</div>}
+                    <div className="skill-card-icon" style={{ color: meta.color }}><Icon size={19} /></div>
+                    <div className="skill-card-name">{displayName(s.name)}</div>
+                    <div className="skill-card-rawname">{s.name}</div>
+                    <div className="skill-card-desc">{s.description?.trim() || LAYER_DESC[LAYER_META[s.layer] ? s.layer : 'other']}</div>
+                    <div className="skill-card-foot">
+                      {s.needsApi && (s.apiConfigured
+                        ? <span className="badge badge-ok">已配置</span>
+                        : <span className="badge badge-warn">需 API</span>)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         )}
 
         {orderedLayers.map((layer) => (

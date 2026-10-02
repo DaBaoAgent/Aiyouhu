@@ -28,13 +28,19 @@ SKILLS_DIR = PROJECT_ROOT / "skills" / "openclaw"
 PROFILES_DIR = PROJECT_ROOT / "profiles"
 OPENCLAW_PROFILE = "easel"
 
+# 置顶技能：在技能库列表中排最前（与 web/app.py / 前端 SkillPage.tsx 保持一致）
+# 顺序即置顶区展示顺序（sanguo 最前）。
+PINNED_SKILLS = ("sanguo", "koubo")
+
 
 def _list_all_skills() -> list[str]:
     """列出所有可用 SKILL 名。"""
     if not SKILLS_DIR.is_dir():
         return []
-    return [d.name for d in sorted(SKILLS_DIR.iterdir())
-            if d.is_dir() and (d / "SKILL.md").is_file()]
+    dirs = sorted(SKILLS_DIR.iterdir(),
+                  key=lambda p: (0, PINNED_SKILLS.index(p.name)) if p.name in PINNED_SKILLS
+                  else (1, p.name))
+    return [d.name for d in dirs if d.is_dir() and (d / "SKILL.md").is_file()]
 
 
 def _find_skill(name: str) -> str | None:

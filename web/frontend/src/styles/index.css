@@ -95,24 +95,24 @@ body {
 
 .sidebar-header { padding: 18px 16px 14px; border-bottom: 1px solid var(--border); }
 
-.sidebar-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.sidebar-logo { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; }
 
 .sidebar-logo h1 {
   color: var(--text);
   font-family: 'Bodoni Moda', 'Didot', 'Baskerville', serif;
-  font-size: 24px;
+  font-size: 14.5px;
   font-style: italic;
   font-weight: 600;
   line-height: 1;
-  letter-spacing: -1px;
+  letter-spacing: 0.1px;
 }
 
 .sidebar-logo-icon {
-  width: 30px; height: 30px;
-  border-radius: 9px;
+  width: 28px; height: 28px;
+  border-radius: 8px;
   display: block;
   object-fit: cover;
-  box-shadow: 0 5px 14px rgba(51, 66, 148, 0.1);
+  box-shadow: 0 4px 10px rgba(51, 66, 148, 0.08);
 }
 
 .persona-select {
@@ -365,17 +365,8 @@ textarea.field { resize: vertical; min-height: 90px; }
   width: 100%; max-width: 720px; margin: 0 auto; padding: 24px 20px 60px; gap: 18px;
   animation: fadeIn 0.3s var(--ease);
 }
-.chat-hero-brand {
-  display: flex; align-items: center; gap: 10px;
-  color: var(--text);
-  font-family: 'Bodoni Moda', 'Didot', 'Baskerville', serif;
-  font-size: 27px; font-style: italic; font-weight: 600;
-  line-height: 1; letter-spacing: -1.2px;
-}
-.chat-hero-brand img {
-  width: 38px; height: 38px; display: block; object-fit: contain;
-  filter: drop-shadow(0 6px 12px rgba(51,66,148,.12));
-}
+.chat-hero-logo { margin-bottom: 2px; }
+.chat-hero-logo img { width: 250px; height: auto; display: block; }
 .chat-hero-title {
   color: var(--text); font-family: 'Noto Serif SC', 'Songti SC', serif;
   font-size: 34px; font-weight: 400; letter-spacing: -1.2px; text-align: center;

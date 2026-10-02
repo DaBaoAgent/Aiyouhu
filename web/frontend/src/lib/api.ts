@@ -560,6 +560,7 @@ export function streamChat(
   attachments: UploadedFile[] = [],
   onQuestion?: (q: ChatQuestion) => void,
   onHeartbeat?: (note: string) => void,
+  onThinkingFinal?: (full: string) => void,
 ): AbortController {
   const controller = new AbortController();
   let lastEventId = 0;
@@ -592,6 +593,9 @@ export function streamChat(
           try { onToken(JSON.parse(data) as string); } catch { onToken(data); }
         } else if (currentEvent === 'thinking' && onThinking) {
           try { onThinking(JSON.parse(data) as string); } catch { onThinking(data); }
+        } else if (currentEvent === 'thinking_final' && onThinkingFinal) {
+          // 收尾权威版：delta 流有质量问题（OpenClaw known issue），用完整 rawThinking 覆盖
+          try { onThinkingFinal(JSON.parse(data) as string); } catch { onThinkingFinal(data); }
         } else if (currentEvent === 'activity' && onActivity) {
           try { onActivity(JSON.parse(data) as string); } catch { onActivity(data); }
         } else if (currentEvent === 'question' && onQuestion) {

@@ -351,6 +351,13 @@ export default function App() {
       },
       // onHeartbeat：防呆心跳（30s 静默）。只设独立的「未卡住」提示，绝不写 activity/thinking → 不顶掉真实状态。
       (note) => setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], stillWorking: note } } : p)),
+      // onThinkingFinal：收尾权威版完整思考——替换流式期间累积的 delta 文本
+      //（OpenClaw 的 thinking delta 流存在乱序/错位，message_end 的 rawThinking 才可靠）
+      (thinkFull) => {
+        const a = streamAcc.current[sessionId]; if (!a) return;
+        a.thinking = thinkFull;
+        setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], thinking: thinkFull, stillWorking: undefined } } : p));
+      },
     );
   }, [appendAssistant, clearStream]);
 
@@ -460,6 +467,12 @@ export default function App() {
       },
       // onHeartbeat：同上，独立的「未卡住」提示，不覆盖 activity/thinking。
       (note) => setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], stillWorking: note } } : p)),
+      // onThinkingFinal：恢复轮同样接收收尾权威版（重放的事件里含 thinking_final）
+      (thinkFull) => {
+        const a = streamAcc.current[sessionId]; if (!a) return;
+        a.thinking = thinkFull;
+        setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], thinking: thinkFull, stillWorking: undefined } } : p));
+      },
     );
   }, [appendAssistant, clearStream]);
 
@@ -797,7 +810,7 @@ export default function App() {
         <div className="overlay">
           <div className="modal" style={{ width: 420, maxWidth: '100%', textAlign: 'center' }}>
             <div style={{ fontSize: 40 }}>👋</div>
-            <h2 style={{ margin: '12px 0 8px', fontSize: 20 }}>欢迎使用 Easel</h2>
+            <h2 style={{ margin: '12px 0 8px', fontSize: 20 }}>欢迎使用 AINSNBOT</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.6 }}>
               配置你的账号画像，生成的内容会更贴合你的风格、受众和平台调性。<br />
               大约 2 分钟，也可以随时在侧栏「+ 新建画像」补配。

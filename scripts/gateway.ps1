@@ -87,6 +87,14 @@ switch ($args[0]) {
     'start' {
         if (Test-Gateway) { Write-Host '[easel] Gateway already running'; break }
         New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+        # ---- 原始事件流（Easel Web「💭 思考过程」的数据源）----
+        # web/app.py tail 此文件取 thinking_delta 显示思考过程。必须在真正跑模型的 gateway
+        # 进程上开（`openclaw agent` 客户端不写 raw 流，在客户端 env 上设置无效）。
+        # 与 gateway.sh 对齐；路径固定在项目内，web 侧默认值同步（web/app.py SHARED_RAW_STREAM）。
+        $env:OPENCLAW_RAW_STREAM = '1'
+        $env:OPENCLAW_RAW_STREAM_PATH = Join-Path $Root 'outputs/_sessions/raw-stream.jsonl'
+        New-Item -ItemType Directory -Force -Path (Join-Path $Root 'outputs\_sessions') | Out-Null
+        Set-Content -LiteralPath $env:OPENCLAW_RAW_STREAM_PATH -Value '' -NoNewline
         Write-Host "[easel] Starting Easel gateway (profile: $Profile, port: $Port)..."
         $command = "openclaw --profile $Profile gateway run --force --allow-unconfigured --bind loopback"
         Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command', $command `
