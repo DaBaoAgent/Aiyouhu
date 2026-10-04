@@ -95,24 +95,32 @@ body {
 
 .sidebar-header { padding: 18px 16px 14px; border-bottom: 1px solid var(--border); }
 
+@font-face {
+  font-family: 'YouSheBiaoTiHei';
+  src: url('../assets/fonts/YouSheBiaoTiHei.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 .sidebar-logo { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; }
+
+.sidebar-logo-wordmark {
+  width: 50%;
+  height: auto;
+  display: block;
+  flex-shrink: 0;
+}
 
 .sidebar-logo h1 {
   color: var(--text);
-  font-family: 'Bodoni Moda', 'Didot', 'Baskerville', serif;
+  font-family: 'YouSheBiaoTiHei', '优设标题黑', 'Noto Serif SC', serif;
   font-size: 14.5px;
-  font-style: italic;
-  font-weight: 600;
+  font-style: normal; /* 字体自带8°倾斜，避免双重合成斜体 */
+  font-weight: 400;
   line-height: 1;
   letter-spacing: 0.1px;
-}
-
-.sidebar-logo-icon {
-  width: 28px; height: 28px;
-  border-radius: 8px;
-  display: block;
-  object-fit: cover;
-  box-shadow: 0 4px 10px rgba(51, 66, 148, 0.08);
+  white-space: nowrap;
 }
 
 .persona-select {

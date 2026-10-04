@@ -7,6 +7,7 @@
 - `hotlist-apis.md` — 中文社媒热搜 API（60s / xxapi 聚合源，走代理；禁止直接抓平台官网）
 - `pillar-and-cadence.md` — 内容支柱与发布节奏（策划三角共享知识）
 - `scoring-dimensions.md` — 统一评分维度（七维 + 标尺）
+- `video-reference-images.md` — 视频参考图规范（折展/移动场景必须两图：折叠态+展开态 / 45°+侧面；视频类 SKILL 通用硬规范）
 
 ## 脚本（scripts/）
 

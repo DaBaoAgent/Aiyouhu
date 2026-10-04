@@ -28,7 +28,7 @@ const LAYER_META: Record<string, LayerMeta> = Object.fromEntries(LAYERS.map((l) 
 const OTHER: LayerMeta = { key: 'other', label: '其他', Icon: IconLayers, color: 'var(--layer-general)' };
 
 // 置顶技能：无论属于哪一层，都在技能库列表最上方单独成区。数组顺序=展示顺序。
-const PINNED_SKILLS: string[] = ['sanguo', 'koubo'];
+const PINNED_SKILLS: string[] = ['fuke', 'sanguo', 'koubo', 'kefu'];
 
 // 按 skill 名关键词映射线性图标（无匹配退回层图标）
 function iconFor(name: string, LayerIcon: IconC): IconC {

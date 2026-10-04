@@ -357,6 +357,30 @@ export async function adoptOversize(files: File[], sessionId: string): Promise<A
   return r.files;
 }
 
+export interface ServerSessionMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  activity?: string;
+}
+
+export interface ServerSession {
+  id: string;
+  created: number;
+  updated: number;
+  first_user: string;
+  messages: ServerSessionMessage[];
+}
+
+/** 服务端会话列表（真相源＝OpenClaw transcript 库，见后端 web/oc_sessions.py）。 */
+export function fetchServerSessions(): Promise<{ sessions: ServerSession[]; count: number }> {
+  return request<{ sessions: ServerSession[]; count: number }>('/api/sessions');
+}
+
+/** 单个会话的完整消息。 */
+export function fetchServerSession(id: string): Promise<ServerSession> {
+  return request<ServerSession>(`/api/sessions/${encodeURIComponent(id)}`);
+}
+
 export function deleteSession(sessionKey: string): Promise<{ deleted: boolean }> {
   return request<{ deleted: boolean }>(`/api/session/${encodeURIComponent(sessionKey)}`, {
     method: 'DELETE',

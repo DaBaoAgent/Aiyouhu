@@ -103,6 +103,7 @@ python skills/openclaw/sanguo/scripts/sanguo.py post \
 7. **合规红线**（画像 `preferences.md` 优先）：无医疗宣称（治疗/康复/治愈/替代医疗器械）；无「最/第一/100%/顶级」绝对化用语；不虚构销量/好评/案例；老人场景含安全提示。
 8. **交付给链接**：成片一律给可播放链接 `http://localhost:7860/api/media/<相对 outputs/ 的路径>`（**不含 `outputs/` 前缀**；中文逐段 URL 编码，如 `api/media/<topic>/<file>.mp4`），不发聊天媒体附件。
 9. **字幕统一走 `sanguo.py ass` / `post --spec`**：样式固定为雅黑加粗、`Fontsize=min(W,H)*0.0625`、位置在画面下三分之一（`MarginV=0.26H`）、去标点、入场上弹 + 每 0.6s 轻跳、重点词黄字（`&H0000FFFF&`）；**不要用裸 SRT 默认样式**。文本用 `字幕.json` 提供准确稿（时间轴可用 `asr.py` 取），`hl` 列表为要标黄的重点词。
+10. **折展 / 移动场景用两张参考图**：有明确折叠或展开要求时，`multi_image` 必须给「展开态 + 折叠态」两张参考图（两个方向都覆盖起止两端），且**折叠↔展开过程须控制在 0.3 秒内**一气呵成（防失真）；移动场景必须给「45° + 侧面」两张图（加深细节、防失真）。单图先补齐再生成，详见 `skills/shared/references/video-reference-images.md`。 [2026-10-03 用户定]
 
 ## Profile 感知
 

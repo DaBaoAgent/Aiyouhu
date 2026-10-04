@@ -18,14 +18,17 @@ import SettingsPanel from './components/SettingsPanel';
 import { fetchStatus, fetchPersonas, streamChat, fetchLastTurn, stopChat } from './lib/api';
 import type { PersonaItem, UploadedFile, ChatQuestion } from './lib/api';
 import { questionStatus } from './lib/api';
-import { deleteSession as deleteRemoteSession } from './lib/api';
+import { deleteSession as deleteRemoteSession, fetchServerSessions } from './lib/api';
 import {
   loadSessions,
   saveSessions,
   createSession,
   updateSessionTitle,
+  generateSessionTitle,
   loadActiveId,
   saveActiveId,
+  loadDeletedIds,
+  rememberDeletedId,
 } from './lib/store';
 import type { ChatSession, ChatMessage, StreamState } from './lib/store';
 
@@ -145,6 +148,63 @@ export default function App() {
       else openNew(existing);
     }
     return () => { ch?.removeEventListener('message', onMsg); ch?.close(); };
+  }, []);
+
+  // 会话列表的真相源在服务端（OpenClaw transcript 库）：localStorage 只是本机缓存。
+  // 浏览器站点数据被清 / 换浏览器 / 换设备，侧栏都能从服务端整表恢复——这也是「清缓存就丢
+  // 全部历史」的根治。合并规则：同 id 以本地为准（本地还有思考过程、画像绑定、正在跑的轮次），
+  // 本地没有的（或本地是空壳的）用服务端补齐；已删除的 id 由墓碑挡住，避免「删了又回来」。
+  useEffect(() => {
+    let cancelled = false;
+    fetchServerSessions()
+      .then((data) => {
+        const remote = Array.isArray(data?.sessions) ? data.sessions : [];
+        if (cancelled || remote.length === 0) return;
+        const deleted = new Set(loadDeletedIds());
+        setSessions((prev) => {
+          const merged = [...prev];
+          const index = new Map(merged.map((s, i) => [s.id, i] as const));
+          let changed = false;
+          for (const r of remote) {
+            if (!r?.id || deleted.has(r.id)) continue;
+            const remoteMsgs = (Array.isArray(r.messages) ? r.messages : [])
+              .filter((m) => m && m.role && typeof m.content === 'string')
+              .map((m) => ({
+                role: m.role,
+                content: m.content,
+                ...(m.activity ? { activity: m.activity } : {}),
+              })) as ChatMessage[];
+            const at = index.get(r.id);
+            if (at === undefined) {
+              if (remoteMsgs.length === 0) continue;
+              merged.push({
+                id: r.id,
+                title: r.first_user ? generateSessionTitle(r.first_user) : '历史会话',
+                messages: remoteMsgs,
+                created: r.created || Date.now(),
+              });
+              index.set(r.id, merged.length - 1);
+              changed = true;
+              continue;
+            }
+            const local = merged[at];
+            const localCount = Array.isArray(local.messages) ? local.messages.length : 0;
+            if (localCount === 0 && remoteMsgs.length > 0) {
+              merged[at] = { ...local, messages: remoteMsgs, created: local.created || r.created };
+              changed = true;
+            } else if (local.title === 'New Chat' && r.first_user) {
+              merged[at] = { ...local, title: generateSessionTitle(r.first_user) };
+              changed = true;
+            }
+          }
+          if (!changed) return prev;
+          const next = merged.sort((a, b) => (b.created || 0) - (a.created || 0));
+          saveSessions(next);
+          return next;
+        });
+      })
+      .catch(() => { /* 服务端拿不到就继续用本地缓存，不打扰用户 */ });
+    return () => { cancelled = true; };
   }, []);
 
   // 持久化当前活跃会话 id，重开网页据此续接上次对话（修复"今天再问就忘了"）。
@@ -618,6 +678,8 @@ export default function App() {
   const handleSessionDelete = useCallback((id: string) => {
     if (!window.confirm('确定删除这条对话？')) return;
 
+    // 记墓碑：服务端列表会把历史会话补回来，没有墓碑就会「删了又回来」。
+    rememberDeletedId(id);
     const target = sessionsRef.current.find((s) => s.id === id);
     const wasRunning = Boolean(streamCtl.current[id]);
     const stopped = wasRunning

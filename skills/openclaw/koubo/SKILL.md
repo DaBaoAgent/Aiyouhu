@@ -14,7 +14,7 @@ layer: produce
 
 | 环节 | 子命令 | 复用 | 产物 |
 |------|--------|------|------|
-| S1 文案 | （读 `copywriting` + 画像，人工/模型产出） | `skills/openclaw/copywriting`、`references/copy-frameworks.md` | `文案初稿_<name>.md` |
+| S1 文案 | （读 `copywriting` + 画像，人工/模型产出） | `skills/openclaw/copywriting`、`skills/shared/references/copy-frameworks.md` | `文案初稿_<name>.md` |
 | S2 链路配置 | `plan-template` | 本 SKILL | `koubo_plan_<name>.json` |
 | S3 H3 提示词 | `h3plan` | 本 SKILL（六段式 + 两段切分） | `H3视频提示词_<name>.md` |
 | S4 两段生成 + 拼接 | `h3gen` | `autodl-h3-video/scripts/h3_video.py` + `video_ops.py concat` | `成片_<N>秒.mp4` |
@@ -76,6 +76,7 @@ python skills/openclaw/koubo/scripts/koubo.py all --plan ... --yes
   `参考主体` / `镜头景别` / `主体动作` / `场景环境` / `光线风格` / `画质约束`。
 - 拼接为单行、字段间「；」分隔；**禁用破折号「——」**（H3 会丢弃整句，脚本会直接拦截）。
 - 参考图放 `outputs/<topic>/assets/`，`refs` 写文件名；提示词里不出现文字/字幕/水印/logo 描述。
+- **折展 / 移动场景必须两张参考图**（折叠态+展开态 / 45°+侧面），见「规则 10」与 `skills/shared/references/video-reference-images.md`。
 - `h3plan` 会把以上写成 `H3视频提示词_<name>.md`（含每段运行命令 + 拼接命令 + 成本预估）。
 
 ## S4 · 两段生成 + 拼接
@@ -146,7 +147,7 @@ python skills/openclaw/koubo/scripts/koubo.py all --plan ... --yes
 
 成片**直接给链接**，不在聊天里发媒体附件 / 媒体卡片。
 
-- 链接 = Easel Web 媒体直链：`http://localhost:7860/api/media/<outputs 相对路径>`，路径按段 URL 编码（中文等非 ASCII 字符逐段编码），例如 `outputs/<topic>/成片_<N>秒_<name>.mp4`。
+- 链接 = Easel Web 媒体直链：`http://localhost:7860/api/media/<相对 outputs 的路径>`，路径**不含** `outputs/` 段、按段 URL 编码（中文等非 ASCII 字符逐段编码），例如 `<topic>/成片_<N>秒_<name>.mp4`。
 - 交付前先确认 Easel Web 在运行（`http://localhost:7860/` 可达）；没在跑先提示用户双击项目根 `启动Easel.cmd`（或代为启动）再给链接。
 - 本机预览链接只在本机有效、不可对外分发；对外投放链接用 `skill-short-link`（UTM / 短链，需公网落地页），两者不混用。
 
@@ -161,7 +162,8 @@ python skills/openclaw/koubo/scripts/koubo.py all --plan ... --yes
 6. **不合格不交付** — 验收表全绿才 `KOUBO_OK`；失败保留断点在 `outputs/_scratch/koubo_<name>/`。
 7. **合规红线**（画像 `preferences.md` 优先）— 无医疗宣称（治疗/康复/治愈/替代医疗器械）；无「最/第一/100%/顶级」绝对化用语；不虚构销量/好评/案例；不违规导流；老人场景含安全提示。
 8. **不覆盖原始素材** — 只新增文件，不改 `assets/` 原素材与既有成片。
-9. **交付给链接** — 出片一律给出可播放链接（Easel Web 媒体直链 `/api/media/<outputs 相对路径>`），不在聊天里发媒体附件 / 卡片；见「交付（出片后）」。 [2026-10-02 用户定]
+9. **交付给链接** — 出片一律给出可播放链接（Easel Web 媒体直链 `/api/media/<相对 outputs 的路径>`，不含 `outputs/` 段），不在聊天里发媒体附件 / 卡片；见「交付（出片后）」。 [2026-10-02 用户定]
+10. **折展 / 移动场景用两张参考图** — 有明确折叠或展开要求时，必须给「展开态 + 折叠态」两张参考图（两个方向都要覆盖起止两端），且**折叠↔展开的整个过程须控制在 0.3 秒内**一气呵成（防失真）；移动场景必须给「45° + 侧面」两张图以加深细节、防失真。单图视为不合格输入，先补齐再发起计费生成。详见 `skills/shared/references/video-reference-images.md`。 [2026-10-03 用户定]
 
 ## 排查
 

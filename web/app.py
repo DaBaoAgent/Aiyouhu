@@ -39,6 +39,13 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(PROJECT_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # web/ 同目录模块
+try:
+    import oc_sessions   # 服务端会话列表：真相源=OpenClaw transcript 库（只读）
+except Exception as _oc_sessions_err:   # 缺库/结构变化时降级为「不提供列表」，不阻断 Web
+    oc_sessions = None  # type: ignore
+    print(f"[oc-sessions] 模块不可用：{_oc_sessions_err}", file=sys.stderr, flush=True)
+
 from easel.gateway_endpoint import chat_completions_url, healthz_url, port_source
 from easel.openclaw_cmd import openclaw_base_cmd
 from easel.persona import load_profile_text, persona_prefix, chat_turn_message, profile_exists, _FILE_ORDER
@@ -73,8 +80,8 @@ SKILLS_DIR = PROJECT_ROOT / "skills"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
 # 置顶技能：在技能库列表中排最前（与 easel/commands/skill.py 的 CLI 列表保持一致）
-# 顺序即置顶区展示顺序（sanguo 最前）。
-PINNED_SKILLS = ("sanguo", "koubo")
+# 顺序即置顶区展示顺序（fuke 最前）。
+PINNED_SKILLS = ("fuke", "sanguo", "koubo", "kefu")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 REACT_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
@@ -4097,6 +4104,37 @@ def _write_baseline_profile(name: str, form: dict) -> None:
     (pd / 'memory.md').write_text(
         f"# 经验沉淀\n\n## 内容洞察\n\n{'喜欢的内容/对标：' + likes if likes else '[待 AI 分析已收藏/点赞]'}\n\n## 踩过的坑\n\n[待积累]\n",
         encoding='utf-8')
+
+
+@app.get("/api/sessions")
+async def api_sessions(limit: int = 60, messages: bool = True):
+    """服务端会话列表（新→旧）。
+
+    侧栏的真相源：前端只做 localStorage 缓存，浏览器数据被清/换浏览器也能整表恢复。
+    读的是 OpenClaw 自己的库（web/oc_sessions.py），只读、失败返回空表而不是 5xx
+    —— 前端有本地缓存兜底，不该因为库读不到就打不开页面。
+    """
+    if oc_sessions is None:
+        return {"sessions": [], "count": 0, "error": "oc_sessions 模块不可用"}
+    try:
+        items = oc_sessions.list_sessions(limit=max(1, min(int(limit), 200)))
+    except Exception as e:
+        print(f"[api/sessions] {e}", file=sys.stderr, flush=True)
+        return {"sessions": [], "count": 0, "error": str(e)}
+    if not messages:
+        items = [{k: v for k, v in s.items() if k != "messages"} for s in items]
+    return {"sessions": items, "count": len(items)}
+
+
+@app.get("/api/sessions/{session_id}")
+async def api_session_detail(session_id: str):
+    """单个会话的完整消息（服务端唯一真相源）。"""
+    if oc_sessions is None:
+        raise HTTPException(500, "oc_sessions 模块不可用")
+    s = oc_sessions.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "会话不存在或没有历史消息")
+    return s
 
 
 @app.delete("/api/session/{session_key}")

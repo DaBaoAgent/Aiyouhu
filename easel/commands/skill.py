@@ -29,8 +29,8 @@ PROFILES_DIR = PROJECT_ROOT / "profiles"
 OPENCLAW_PROFILE = "easel"
 
 # 置顶技能：在技能库列表中排最前（与 web/app.py / 前端 SkillPage.tsx 保持一致）
-# 顺序即置顶区展示顺序（sanguo 最前）。
-PINNED_SKILLS = ("sanguo", "koubo")
+# 顺序即置顶区展示顺序（fuke 最前）。
+PINNED_SKILLS = ("fuke", "sanguo", "koubo", "kefu")
 
 
 def _list_all_skills() -> list[str]:

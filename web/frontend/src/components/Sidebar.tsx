@@ -115,8 +115,8 @@ export default function Sidebar({
     <div className="sidebar">
       <div className="sidebar-header">
         <div className="sidebar-logo">
-          <img className="sidebar-logo-icon" src="./static/ainsnbot-icon.png" alt="" />
-          <h1>AINSNBOT</h1>
+          <img className="sidebar-logo-wordmark" src="./static/ainsnbot-wordmark.png" alt="爱优护智能工厂" />
+          <h1>爱优护智能工厂</h1>
         </div>
         <select
           className="persona-select"

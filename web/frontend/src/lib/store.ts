@@ -153,6 +153,38 @@ export function saveSessions(sessions: ChatSession[]): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(prune(sessions)));
 }
 
+/**
+ * 已删除会话的墓碑。
+ *
+ * 会话列表的真相源在服务端（OpenClaw transcript 库，见后端 web/oc_sessions.py），
+ * 而「删除」目前只作用于本地——没有墓碑的话，下一页加载就会把刚删掉的会话原样补回来。
+ * 只存 id 字符串数组，上限 500 条（够用且不会撑爆 localStorage）。
+ */
+const DELETED_KEY = 'easel_deleted_sessions';
+const DELETED_MAX = 500;
+
+export function loadDeletedIds(): string[] {
+  try {
+    const raw = localStorage.getItem(DELETED_KEY);
+    if (!raw) return [];
+    const ids = JSON.parse(raw) as unknown;
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberDeletedId(id: string): void {
+  if (!id) return;
+  try {
+    const ids = loadDeletedIds().filter((x) => x !== id);
+    ids.unshift(id);
+    localStorage.setItem(DELETED_KEY, JSON.stringify(ids.slice(0, DELETED_MAX)));
+  } catch {
+    /* quota / 隐私模式：删不掉墓碑不阻断删除本身 */
+  }
+}
+
 export function createSession(persona?: string): ChatSession {
   return {
     id: generateId(),

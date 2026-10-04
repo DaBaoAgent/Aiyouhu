@@ -71,5 +71,6 @@ python skills/shared/scripts/ai_video.py check --provider dashscope
 ## 注意
 
 - 视频生成 API 均为异步且**耗时较长**（数十秒到数分钟）+ **按量计费**，先与用户确认。
+- **折展 / 移动场景需两图参考**（硬规范）：有明确折叠或展开要求时必须给「展开态 + 折叠态」两张图（两个方向覆盖起止两端），且**折叠↔展开过程须控制在 0.3 秒内**一气呵成（防失真）；移动场景必须给「45° + 侧面」两张图。本通道 `image2video` 仅支持单图，此类场景改用 `autodl-h3-video`（`multi_image` 多图）或按共享规范补齐两图后再生成；单图属不合格输入。详见 `skills/shared/references/video-reference-images.md`。 [2026-10-03 用户定]
 - 各 provider 的 model 名/字段各版本有差异，均可用 `--model` 或 env 覆盖；如报错对照官方最新文档调整。
 - `--audio auto` 只按 capability profile 映射已知字段；能力声明不等于质量保证，下载后仍须 ffprobe/ASR/视觉审计。网关默认有声但开关字段未知时，不猜测注入参数。
