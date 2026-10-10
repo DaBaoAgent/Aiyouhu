@@ -17,7 +17,7 @@ layer: produce
 | S1 文案 | （读 `copywriting` + 画像，人工/模型产出） | `skills/openclaw/copywriting`、`skills/shared/references/copy-frameworks.md` | `文案初稿_<name>.md` |
 | S2 链路配置 | `plan-template` | 本 SKILL | `koubo_plan_<name>.json` |
 | S3 H3 提示词 | `h3plan` | 本 SKILL（六段式 + 两段切分） | `H3视频提示词_<name>.md` |
-| S4 两段生成 + 拼接 | `h3gen` | `autodl-h3-video/scripts/h3_video.py` + `video_ops.py concat` | `成片_<N>秒.mp4` |
+| S4 分段生成 + 拼接 | `h3gen` | `autodl-h3-video/scripts/h3_video.py` + `video_ops.py concat` | `成片_<N>秒.mp4` |
 | S5 配音字幕 BGM | `build` | `voice_clone.py` + `audio_mix.py` + ffmpeg | `成片_<N>秒_配音字幕BGM_<name>.mp4` |
 | 一键 | `all` | S3→S4→S5 | 同上 |
 
@@ -33,15 +33,22 @@ python skills/openclaw/koubo/scripts/koubo.py plan-template -o outputs/<topic>/k
 # 2) 生成 H3 提示词文档 + 运行命令（不调 H3、不花钱）
 python skills/openclaw/koubo/scripts/koubo.py h3plan --plan outputs/<topic>/koubo_plan_<name>.json
 
-# 3) 两段生成 + 拼接（按量计费，先 --dry-run 看预估，确认后 --yes）
+# 3) 分段生成 + 拼接（按量计费，先 --dry-run 看预估，确认后 --yes）
 python skills/openclaw/koubo/scripts/koubo.py h3gen --plan ... --dry-run
 python skills/openclaw/koubo/scripts/koubo.py h3gen --plan ... --yes
+
+# 3b) 单段重跑：只重生成没审核过的某一段，再自动重新拼接（其余段复用）
+python skills/openclaw/koubo/scripts/koubo.py h3gen --plan ... --only 2 --yes
+python skills/openclaw/koubo/scripts/koubo.py h3gen --plan ... --only 1,3 --yes   # 多段
+python skills/openclaw/koubo/scripts/koubo.py h3gen --plan ... --skip-existing --yes  # 只补缺段
 
 # 4) 配音 + 无标点字幕 + BGM → 成片
 python skills/openclaw/koubo/scripts/koubo.py build --plan outputs/<topic>/koubo_plan_<name>.json
 
 # 一键全链路（H3 + 后期）
 python skills/openclaw/koubo/scripts/koubo.py all --plan ... --yes
+# 一键但只补/重跑指定段（其余段复用）
+python skills/openclaw/koubo/scripts/koubo.py all --plan ... --only 2 --yes
 ```
 
 ## 链路配置（plan.json）
@@ -71,18 +78,23 @@ python skills/openclaw/koubo/scripts/koubo.py all --plan ... --yes
 
 ## S3 · H3 提示词（六段式 + 两段切分）
 
-- **单段上限 10s**：15s 拆 **8 + 7**，20s 拆 10+10，以此类推；每段一个 `segments[]` 条目。
+- **默认每段 4s（单段上限 10s）**：12s 拆 **4 + 4 + 4** 三段，15s 拆 4+4+4+3，20s 拆 4×5；每段一个 `segments[]` 条目。
+  段短、互不影响，**某段审核不过可只重跑该段**（`h3gen --only N`，其余段复用、不重复付费）。
 - 每段提示词按 **六段式** 填写（`prompt` 六个键，顺序固定）：
   `参考主体` / `镜头景别` / `主体动作` / `场景环境` / `光线风格` / `画质约束`。
 - 拼接为单行、字段间「；」分隔；**禁用破折号「——」**（H3 会丢弃整句，脚本会直接拦截）。
 - 参考图放 `outputs/<topic>/assets/`，`refs` 写文件名；提示词里不出现文字/字幕/水印/logo 描述。
 - **折展 / 移动场景必须两张参考图**（折叠态+展开态 / 45°+侧面），见「规则 10」与 `skills/shared/references/video-reference-images.md`。
+- **状态切换节奏固定 0.3 秒**：只要该段动作含「折叠 ↔ 展开」任一方向的切换，`主体动作` 字段必须写明「切换全程 0.3 秒内一气呵成」；`h3plan` 会自动补写该约束（见下），人工也可显式写死。
 - `h3plan` 会把以上写成 `H3视频提示词_<name>.md`（含每段运行命令 + 拼接命令 + 成本预估）。
 
 ## S4 · 两段生成 + 拼接
 
 `h3gen` 逐段调 `h3_video.py -w <workflow> --prompt <六段式单行> -i <refs...> -r <res> -d <dur> -o assets/clipN_<shots>.mp4`，
 全部完成后用 `video_ops.py concat` 拼成 `成片_<N>秒.mp4`（脚本自带 ffprobe 验收：时长±1s / 画幅 / >1MB）。
+
+**单段重跑**：`h3gen --only 2` 只重生成第 2 段（其余段文件复用，只对该段计费），完成后自动重新拼接整片；
+`--skip-existing` 跳过所有已有有效分段、只补缺失段。拼接前若缺任一有效分段会直接报错并提示补跑段号，不会拿残缺段出片。
 
 ## 固定约定（S5，默认值可用参数覆盖）
 
@@ -156,14 +168,15 @@ python skills/openclaw/koubo/scripts/koubo.py all --plan ... --yes
 1. **原片不压缩** — 目标时长 ≥ 原片长度；不足用末帧定格补足，绝不裁掉原有画面。
    **旁白早于片尾结束时，保留尾部 BGM + 空镜收尾，不把视频裁短**（2026-10-02 用户定）。
 2. **不吞字、不磕巴** — 根因是云端小模型（CosyVoice2-0.5B）同句多合成**节奏随机**：会插入内部怪停顿（听感磕巴）或让末字发虚。对策：每句合成 N 条候选 → 用 `silencedetect` 剔除含内部停顿者 → 取时长中位数附近最稳一条；TTS 一律 1.0 自然语速合成（直传 speed>1 会截掉末字），要变速只在整轨过一次 `atempo`；交付前用 `silencedetect` 复核成轨（只应有句间停顿）+ ASR 复核末字。
-3. **H3 分段** — 单段 ≤10s；提示词禁破折号「——」、禁电子文字/字幕描述。
+3. **H3 分段** — 默认每段 4s、单段上限 10s（12s 拆 3×4s）；提示词禁破折号「——」、禁电子文字/字幕描述。
+   单段失败/不过审时用 `h3gen --only N` 只重跑该段，再自动重拼，不重复生成其他段。
 4. **字幕去标点但保数字** — 数字内小数点保留；发现残留标点直接判失败。
 5. **付费前置** — H3 与云 TTS 均按量计费；跑前给用户确认范围；H3 未加 `--yes` 不执行。
 6. **不合格不交付** — 验收表全绿才 `KOUBO_OK`；失败保留断点在 `outputs/_scratch/koubo_<name>/`。
 7. **合规红线**（画像 `preferences.md` 优先）— 无医疗宣称（治疗/康复/治愈/替代医疗器械）；无「最/第一/100%/顶级」绝对化用语；不虚构销量/好评/案例；不违规导流；老人场景含安全提示。
 8. **不覆盖原始素材** — 只新增文件，不改 `assets/` 原素材与既有成片。
 9. **交付给链接** — 出片一律给出可播放链接（Easel Web 媒体直链 `/api/media/<相对 outputs 的路径>`，不含 `outputs/` 段），不在聊天里发媒体附件 / 卡片；见「交付（出片后）」。 [2026-10-02 用户定]
-10. **折展 / 移动场景用两张参考图** — 有明确折叠或展开要求时，必须给「展开态 + 折叠态」两张参考图（两个方向都要覆盖起止两端），且**折叠↔展开的整个过程须控制在 0.3 秒内**一气呵成（防失真）；移动场景必须给「45° + 侧面」两张图以加深细节、防失真。单图视为不合格输入，先补齐再发起计费生成。详见 `skills/shared/references/video-reference-images.md`。 [2026-10-03 用户定]
+10. **折展 / 移动场景用两张参考图** — 有明确折叠或展开要求时，必须给「展开态 + 折叠态」两张参考图（两个方向都要覆盖起止两端）；且**状态切换全过程只能 0.3 秒**：无论**折叠态 → 展开态**还是**展开态 → 折叠态**，整段切换都必须在 0.3 秒内一气呵成（防失真、防中途错帧变形），`主体动作` 字段必须写明状态起止与「0.3 秒内一气呵成」；移动场景必须给「45° + 侧面」两张图以加深细节、防失真。单图视为不合格输入，先补齐再发起计费生成。见 `skills/shared/references/video-reference-images.md`。 [2026-10-03 定；2026-10-09 明确两个方向均 ≤0.3 秒]
 
 ## 排查
 

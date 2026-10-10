@@ -18,7 +18,7 @@ layer: produce
 | 依赖 | 说明 |
 |------|------|
 | AUTODL_API_KEY | autodl.art token（https://autodl.art/large-model/tokens 创建，分组选 ComfyUI），已配在项目根 `.env` |
-| 网络 | 直连 autodl.art（SSL 抖动已内置重试） |
+| 网络 | 直连 autodl.art（SSL 抖动已内置重试）。**本机若开着系统代理，H3 请求会被拦成 SSL 断连**（提交 / 轮询 / 下载都可能报 SSL 错）：H3 调用统一用 `scripts/h3run.py` 包裹运行——它在**进程内**清空 `*_PROXY` 并设 `NO_PROXY=*`，不改动系统或用户级代理设置 |
 | ffprobe | 可选（下载后自动验收用；缺失只跳过验收） |
 
 ## 输入
@@ -35,6 +35,8 @@ layer: produce
 
 脚本路径（相对项目根）：`skills/openclaw/autodl-h3-video/scripts/h3_video.py`
 
+> 本机有系统代理时，所有 H3 调用都套一层 `h3run.py` 保持直连（见下方最后一条示例）。
+
 ```bash
 # 文生视频
 python <skill>/scripts/h3_video.py -w text2video --prompt "..." -r 768p竖 -d 5 -o out.mp4
@@ -46,6 +48,8 @@ python <skill>/scripts/h3_video.py -w image_audio --prompt "台词" -i 图.jpg -
 python <skill>/scripts/h3_video.py -w multi_image --ideas 选题.txt -i 图.jpg --out-prefix video --concurrency 10
 # 断点续传
 python <skill>/scripts/h3_video.py ... --resume
+# 系统代理环境下包裹运行（建议固定这样跑）
+python <skill>/scripts/h3run.py <skill>/scripts/h3_video.py -w multi_image --prompt "..." -i 图.jpg -d 6 -o out.mp4
 ```
 
 ## 规则
@@ -56,6 +60,8 @@ python <skill>/scripts/h3_video.py ... --resume
 4. 成本与验收记录在输出目录 `h3_gen_log.jsonl`。
 5. POST 不重试（防重复扣费）；GET 轮询 5 次 / 下载 4 次重试已内置。
 6. **折展 / 移动场景必须多图参考**：有折叠或展开要求时给「展开态 + 折叠态」两张图，且**折叠↔展开过程须控制在 0.3 秒内**一气呵成；移动场景给「45° + 侧面」两张图（`-i` 依次传入）。单图视为不合格输入，详见 `skills/shared/references/video-reference-images.md`。 [2026-10-03 用户定]
+7. **多人物同框必须逐角色写死**：prompt 里对画面中**每个角色**分别写明「服饰 + 站位 + 姿态」，并把「画面共 N 人」带上。例：`刘备深蓝长袍立于左侧拱手；关羽绿袍立于右侧；张飞深色铠甲黑须跟于刘备身后抱拳`。只写"几人同框"模型会丢人、或把角色串成路人（实测三镜各需返工一次），人数越多越要逐个点名。 [2026-10-09 用户定]
+8. **输出视频自带模型音轨**：`multi_image` 等生成的 mp4 里含模型自造的音频。后期叠加旁白时必须显式选轨（`-map 0:v:0 -map 1:a:0`），分段拼接阶段用 `-an` 丢弃模型音轨，否则旁白会与杂音混在一起。 [2026-10-09 用户定]
 
 ## 参考来源
 

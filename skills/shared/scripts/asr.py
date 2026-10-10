@@ -262,6 +262,21 @@ def _render_json(cues: list[tuple[float, float, str]], meta: dict) -> str:
 
 
 # ── 转录核心 ──────────────────────────────────────────────────────────
+def _decode_audio_f32(path: Path):
+    """用 ffmpeg 解码成 16kHz 单声道 float32 numpy 数组。
+
+    绕过 faster-whisper 内建的 PyAV 解码路径（部分环境 PyAV 与 faster-whisper
+    版本不兼容，`av.open(..., metadata_errors=...)` 会直接报 TypeError）。
+    """
+    import numpy as np
+    r = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "1", "-ar", "16000", "-"],
+        capture_output=True)
+    if r.returncode != 0 or not r.stdout:
+        _die(f"ffmpeg 解码音频失败: {(r.stderr or b'')[:300]!r}", 4)
+    return np.frombuffer(r.stdout, dtype=np.float32).copy()
+
+
 def _transcribe_audio(audio: Path, a) -> tuple[list[tuple[float, float, str]], dict]:
     try:
         from faster_whisper import WhisperModel
@@ -287,8 +302,9 @@ def _transcribe_audio(audio: Path, a) -> tuple[list[tuple[float, float, str]], d
              f"（config.json/model.bin/tokenizer.json/vocabulary.txt）", 4)
 
     language = None if a.language in (None, "", "auto") else a.language
+    # 传入解码后的 float32 数组，绕开 PyAV（见 _decode_audio_f32 说明）。
     segments, tinfo = model.transcribe(
-        str(audio),
+        _decode_audio_f32(audio),
         language=language,
         vad_filter=True,
         beam_size=a.beam_size,

@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """kefu · 客服数字人对口型软广全链路
 
-流程：客服形象图(image) → 云配音(voice, 1.15x) → H3 image_audio 对口型(lipsync)
-      → koubo 同款硬字幕(build) → BGM 混音 → 满长成片。
+两种链路（`plan.mode` 选择，默认 `native`）：
+  native（默认）：客服形象图(image) → H3 multi_image 直出 10s **原生语音**视频(direct)
+          → koubo 同款硬字幕（对成片 ASR 对齐）+ BGM → 成片。
+          **无云配音、无参考音色**：台词写进画面提示词，由视频模型原生发声。
+  dub（旧链路）：客服形象图(image) → 云配音(voice, 1.15x) → H3 image_audio 对口型(lipsync)
+          → 硬字幕 + BGM → 成片。
 
-与 koubo 分界：koubo 走 H3 多图场景视频 + 旁白；kefu 让参考图里的人**直接对口型说台词**。
+与 koubo 分界：koubo 走 H3 多图场景视频 + 旁白；kefu 让参考图里的人**直接说台词**。
+
+读音约定：台词里的型号/编号数字按口语逐位书写，`1` 写作「幺」（218 → 二幺八）；
+小数照常（13.8 → 十三点八）。用 `plan.spoken` 做文字替换。
 字幕样式与 koubo **逐字节一致**：微软雅黑 / 加粗 / 白字黑边 / 底部居中 / 字号≈短边6.25% / 去标点(保数字小数点)。
 
 路径铁律：先 cd 到项目根（含 .env 与 skills/shared/scripts/）。
@@ -14,7 +21,8 @@
   python skills/openclaw/kefu/scripts/kefu.py storyboard --plan <plan.json>
   python skills/openclaw/kefu/scripts/kefu.py image      --plan <plan.json> [--dry-run|--yes]
   python skills/openclaw/kefu/scripts/kefu.py voice      --plan <plan.json>
-  python skills/openclaw/kefu/scripts/kefu.py lipsync    --plan <plan.json> [--dry-run|--yes]
+  python skills/openclaw/kefu/scripts/kefu.py direct     --plan <plan.json> [--dry-run|--yes]   # native 直出（原生语音）
+  python skills/openclaw/kefu/scripts/kefu.py lipsync    --plan <plan.json> [--dry-run|--yes]   # dub 旧链路
   python skills/openclaw/kefu/scripts/kefu.py build      --plan <plan.json>
   python skills/openclaw/kefu/scripts/kefu.py all        --plan <plan.json> [--dry-run|--yes]
 """
@@ -37,6 +45,8 @@ DEFAULT_IMG_SIZE = "1440x2560"
 DEFAULT_BGM_VOLUME = 0.16
 
 H3_MAX_AUDIO_SEC = 15                                          # image_audio 单段上限
+H3_MAX_VIDEO_SEC = 10                                          # multi_image 直出单段上限
+DEFAULT_DURATION = {"native": 10, "dub": 15}                   # native 一次性 10s；dub 到 15s
 H3_PRICE = {"480p": 0.04, "768p": 0.06, "1080p": 0.10}         # ￥/秒
 IMG_PRICE = 0.20                                               # 生图粗估 ￥/张
 
@@ -203,6 +213,39 @@ def h3_price(res: str) -> float:
     return H3_PRICE.get(res_key(res), 0.06)
 
 
+# ── 模式与台词工具 ──────────────────────────────────────────────────────
+def mode_of(plan: dict) -> str:
+    m = (plan.get("mode") or "native").lower()
+    if m not in ("native", "dub"):
+        fail(f"plan.mode 只能是 native / dub，当前 {m!r}")
+    return m
+
+
+def plan_lines(plan: dict) -> list[str]:
+    """台词逐句（先套用 plan.spoken 读音替换，如 218 → 二幺八），保留标点供合成用。"""
+    spoken = plan.get("spoken") or {}
+    out = []
+    for v in plan.get("voiceover", []):
+        for k, r in spoken.items():
+            v = v.replace(str(k), str(r))
+        out.append(v)
+    return out
+
+
+def vol_stats(path: Path) -> tuple[float, float]:
+    """(mean_volume, max_volume) dB；读不到返回 (-99, -99)。"""
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+                       capture_output=True, text=True)
+    txt = r.stderr or ""
+    m = re.search(r"mean_volume:\s*(-?[\d.]+)", txt)
+    x = re.search(r"max_volume:\s*(-?[\d.]+)", txt)
+    return (float(m.group(1)) if m else -99.0, float(x.group(1)) if x else -99.0)
+
+
+def has_audio(path: Path) -> bool:
+    return any(s.get("codec_type") == "audio" for s in probe(path).get("streams", []))
+
+
 # ── S2 · plan 模板 ───────────────────────────────────────────────────────
 def cmd_plan(a) -> int:
     tpl = {
@@ -211,8 +254,10 @@ def cmd_plan(a) -> int:
         "profile": "",
         "title": "标题（含关键词）",
         "platform": ["抖音", "视频号"],
+        "mode": "native",
         "resolution": DEFAULT_RES,
-        "duration": 15,
+        "duration": 10,
+        "spoken": {"218": "二幺八"},
         "voice": DEFAULT_VOICE,
         "speed": DEFAULT_FINAL_SPEED,
         "bgm": "auto",
@@ -222,7 +267,8 @@ def cmd_plan(a) -> int:
             "size": DEFAULT_IMG_SIZE,
             "file": "客服_偷偷打电话.jpg",
         },
-        "lipsync_prompt": "参考图中的客服……嘴巴自然开合、严格跟随音频对口型……画面内不出现任何文字、字幕、logo、水印。",
+        "speech_prompt": "竖版写实摄影。年轻女性客服坐办公工位一角，身体微前倾、缩着肩，手机紧贴耳边、一手掩嘴侧压着声音悄悄说电话；神情认真不笑，嘴巴随台词自然开合、逐字清晰对口型；镜头稳定半身近景、人物居中；真实办公环境。",
+        "lipsync_prompt": "（dub 链路）参考图中的客服……严格跟随音频对口型……画面内不出现任何文字、字幕、logo、水印。",
         "voiceover": ["第一句口播。", "第二句口播。"],
         "shots": [
             {"t": "0.0-3.0s", "scene": "画面描述", "vo": "第一句口播", "sub": "第一句口播"},
@@ -231,7 +277,7 @@ def cmd_plan(a) -> int:
     outp = Path(a.output)
     outp.parent.mkdir(parents=True, exist_ok=True)
     outp.write_text(json.dumps(tpl, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"模板已写 → {outp}（填好文案/分镜/人像提示词后跑 storyboard / image / voice / lipsync / build）")
+    print(f"模板已写 → {outp}（默认 native 直出：填好文案/分镜/人像提示词后跑 storyboard / image / direct / build；dub 旧链路改 mode 再跑 voice / lipsync）")
     return 0
 
 
@@ -241,26 +287,33 @@ def cmd_storyboard(a) -> int:
     plan = load_plan(Path(a.plan))
     out = out_dir(root, plan)
     name = plan.get("name", "v1")
-    total = plan.get("duration", 15)
-    L = [f"# 分镜脚本 · 客服对口型版（{total} 秒）", ""]
+    mode = mode_of(plan)
+    total = plan.get("duration", DEFAULT_DURATION[mode])
+    L = [f"# 分镜脚本 · 客服{'直出版' if mode == 'native' else '对口型版'}（{total} 秒）", ""]
     L += [f"- 画像：{plan.get('profile') or '（未指定）'} ｜ 平台：{'/'.join(plan.get('platform', []))} ｜ 画幅：{plan.get('resolution', DEFAULT_RES)}",
-          f"- 标题：{plan.get('title', '')}", f"- 形式：客服模样的女孩**偷偷给家人打电话**，直接对口型说台词（图+音频数字人对口型）",
+          f"- 标题：{plan.get('title', '')}", f"- 形式：客服模样的女孩**偷偷给家人打电话**，" +
+          ("由 H3 直接生成**原生语音**说台词（不配音、无参考音色）" if mode == "native" else "直接对口型说台词（图+音频数字人对口型）"),
           "- 字幕：与技能 koubo 完全一致（微软雅黑 / 加粗 / 白字黑边 / 底部居中 / 去标点）", "", "## 分镜表", "",
           "| 镜 | 时间 | 画面 | 口播 | 字幕 |", "|----|------|------|------|------|"]
     for i, s in enumerate(plan.get("shots", []), 1):
         L.append(f"| {i} | {s.get('t', '')} | {s.get('scene', '')} | {s.get('vo', '')} | {s.get('sub', '')} |")
     L += ["", "## 口播（逐句）", ""]
     L += [f"{i}. {v}" for i, v in enumerate(plan.get("voiceover", []), 1)]
+    prompt_hdr = "## H3 直出提示词（multi_image，原生语音）" if mode == "native" else "## H3 对口型提示词（image_audio）"
+    prompt_txt = (plan.get("speech_prompt") or plan.get("lipsync_prompt", "")) if mode == "native" else plan.get("lipsync_prompt", "")
     L += ["", "## 参考图（人物形象）", "", f"> {plan.get('persona_image', {}).get('prompt', '')}", "",
-          "## H3 对口型提示词（image_audio）", "", f"> {plan.get('lipsync_prompt', '')}", "",
+          prompt_hdr, "", f"> {prompt_txt}", "",
           "## 技术参数", "",
-          f"- 配音：{plan.get('voice', DEFAULT_VOICE)}；最终语速 {plan.get('speed', DEFAULT_FINAL_SPEED)}x",
-          f"- 对口型：H3 image_audio，{plan.get('resolution', DEFAULT_RES)}，单段 {total}s",
-          "- 字幕：koubo 同款 ASS（微软雅黑 / 加粗 / 白字黑边 / 底部居中 / 去标点）",
+          (f"- 出片：H3 multi_image 原生语音，{plan.get('resolution', DEFAULT_RES)}，单段 {total}s（无配音/无参考音色）" if mode == "native"
+           else f"- 配音：{plan.get('voice', DEFAULT_VOICE)}；最终语速 {plan.get('speed', DEFAULT_FINAL_SPEED)}x"),
+          ("- 字幕：对成片 ASR 对齐 → koubo 同款 ASS（微软雅黑 / 加粗 / 白字黑边 / 底部居中 / 去标点）" if mode == "native"
+           else "- 字幕：koubo 同款 ASS（微软雅黑 / 加粗 / 白字黑边 / 底部居中 / 去标点）"),
+          f"- 读音：{plan.get('spoken') or '数字按口语逐位（1→幺）'}",
           f"- BGM：{plan.get('bgm', 'auto')}，音量 {plan.get('bgm_volume', DEFAULT_BGM_VOLUME)}",
-          f"- 输出：outputs/{plan['topic']}/成片_{total}秒_客服对口型_{name}.mp4", "",
+          (f"- 输出：outputs/{plan['topic']}/成片_{total}秒_客服直出_{name}.mp4" if mode == "native"
+           else f"- 输出：outputs/{plan['topic']}/成片_{total}秒_客服对口型_{name}.mp4"), "",
           "## 成本预估", "",
-          f"- 客服形象图 ≈ ￥{IMG_PRICE:.2f} ｜ H3 对口型 {res_key(plan.get('resolution', DEFAULT_RES))} = ￥{h3_price(plan.get('resolution', DEFAULT_RES)):.2f}/秒 × {total}s ≈ ￥{h3_price(plan.get('resolution', DEFAULT_RES)) * total:.2f} ｜ 合计 ≈ ￥{IMG_PRICE + h3_price(plan.get('resolution', DEFAULT_RES)) * total:.2f}", ""]
+          f"- 客服形象图 ≈ ￥{IMG_PRICE:.2f} ｜ H3 {res_key(plan.get('resolution', DEFAULT_RES))} = ￥{h3_price(plan.get('resolution', DEFAULT_RES)):.2f}/秒 × {total}s ≈ ￥{h3_price(plan.get('resolution', DEFAULT_RES)) * total:.2f} ｜ 合计 ≈ ￥{IMG_PRICE + h3_price(plan.get('resolution', DEFAULT_RES)) * total:.2f}", ""]
     doc = out / f"分镜脚本_{name}.md"
     doc.write_text("\n".join(L) + "\n", encoding="utf-8")
     print(f"分镜脚本已写 → {doc}")
@@ -362,6 +415,87 @@ def cmd_lipsync(a) -> int:
     return 0
 
 
+# ── S5n · H3 直出（原生语音，计费）─────────────────────────────────────
+def cmd_direct(a) -> int:
+    root = find_root()
+    plan = load_plan(Path(a.plan))
+    assets = plan_assets(root, plan)
+    name = plan.get("name", "v1")
+    res = plan.get("resolution", DEFAULT_RES)
+    total = float(plan.get("duration", DEFAULT_DURATION["native"]))
+    img = assets / plan.get("persona_image", {}).get("file", "客服.jpg")
+    if not img.is_file():
+        fail(f"找不到人物参考图：{img}（先跑 image）")
+    if total > H3_MAX_VIDEO_SEC:
+        fail(f"native 直出（multi_image）单段上限 {H3_MAX_VIDEO_SEC}s，当前 {total}s")
+    lines = plan_lines(plan)
+    prompt = (plan.get("speech_prompt") or plan.get("lipsync_prompt") or "").strip()
+    if not prompt:
+        fail("plan 缺少 speech_prompt")
+    if lines:
+        prompt = prompt.rstrip("。") + "。台词：「" + "，".join(l.strip("。！？!?") for l in lines) + "」"
+    cost = h3_price(res) * total
+    if a.dry_run:
+        print(f"[dry-run] H3 直出（原生语音）：multi_image · {res} · {total}s → 预估 ≈ ￥{cost:.2f}（未发起）")
+        return 0
+    if not a.yes:
+        fail(f"H3 按量计费（预估 ￥{cost:.2f}）：确认后加 --yes，或先 --dry-run。", 3)
+    outp = assets / f"直出_{name}.mp4"
+    run([sys.executable, str(root / "skills/openclaw/autodl-h3-video/scripts/h3_video.py"),
+         "-w", "multi_image", "--prompt", prompt, "-i", str(img), "-r", res, "-d", str(int(total)),
+         "-o", str(outp)], ok_msg=f"✅ 直出（原生语音）→ {outp}（≈￥{cost:.2f}）")
+    return 0
+
+
+# ── 字幕对齐（native：对成片 ASR 取真实时间轴）──────────────────────────
+def _estimate_cues(video: Path, lines: list[str]) -> list[tuple[str, float, float]]:
+    total = dur(video)
+    n = sum(len(x) for x in lines) or 1
+    acc, out = 0, []
+    for ln in lines:
+        s = acc / n * total
+        acc += len(ln)
+        out.append((ln, s, acc / n * total))
+    return out
+
+
+def _align_lines(raw: list[tuple[str, float, float]], lines: list[str]) -> list[tuple[str, float, float]]:
+    if len(raw) == len(lines):
+        return [(ln, s, e) for ln, (_, s, e) in zip(lines, raw)]
+    out, i = [], 0
+    for txt, st, en in raw:
+        seg_chars = len(txt)
+        take, acc = [], 0
+        while i < len(lines) and (acc + len(lines[i]) <= seg_chars + 2 or not take):
+            take.append(lines[i]); acc += len(lines[i]); i += 1
+        span = en - st
+        for k, ln in enumerate(take):
+            base = sum(len(x) for x in take[:k])
+            out.append((ln, st + span * (base / acc), st + span * ((base + len(ln)) / acc)))
+    while i < len(lines):
+        out.append((lines[i], raw[-1][2], raw[-1][2])); i += 1
+    return out
+
+
+def aligned_cues(root: Path, video: Path, lines: list[str], scratch: Path,
+                 plan: dict) -> list[tuple[str, float, float]]:
+    """native 字幕：优先 asr.py 对成片转写取真实时间轴，失败则按字数估时。"""
+    if not lines:
+        fail("plan.voiceover 为空")
+    raw: list[tuple[str, float, float]] = []
+    try:
+        asr_srt = scratch / "asr_raw.srt"
+        run([sys.executable, str(root / "skills/shared/scripts/asr.py"), "transcribe",
+             "-i", str(video), "-o", str(asr_srt), "--language", "zh",
+             "--model", plan.get("asr_model", "small")])
+        raw = parse_srt(asr_srt)
+    except SystemExit:
+        print("⚠️ ASR 不可用，回退按字数估时")
+    if not raw:
+        raw = _estimate_cues(video, lines)
+    return _align_lines(raw, lines)
+
+
 # ── S6 · 字幕烧录 + BGM（免费后期）─────────────────────────────────────
 def cmd_build(a) -> int:
     root = find_root()
@@ -370,14 +504,23 @@ def cmd_build(a) -> int:
     assets = plan_assets(root, plan)
     scratch = scratch_dir(root, plan)
     name = plan.get("name", "v1")
-    total = plan.get("duration", 15)
+    mode = mode_of(plan)
+    total = plan.get("duration", DEFAULT_DURATION[mode])
 
-    video = assets / f"对口型_{name}.mp4"
+    video = assets / (f"直出_{name}.mp4" if mode == "native" else f"对口型_{name}.mp4")
     if not video.is_file():
-        fail(f"找不到对口型视频：{video}（先跑 lipsync）")
+        fail(f"找不到视频：{video}（native 先跑 direct；dub 先跑 lipsync）")
     srt = out / f"字幕_{name}.srt"
     if not srt.is_file():
-        fail(f"找不到字幕：{srt}（先跑 voice）")
+        if mode == "native":
+            cues = aligned_cues(root, video, [clean_subtitle(x) for x in plan_lines(plan)], scratch, plan)
+            body = []
+            for i, (t, s, e) in enumerate(cues, 1):
+                body += [str(i), f"{ts_srt(s)} --> {ts_srt(e)}", t, ""]
+            srt.write_text("\n".join(body) + "\n", encoding="utf-8-sig")
+            print(f"字幕（ASR 对齐）→ {srt.name}（{len(cues)} 条）")
+        else:
+            fail(f"找不到字幕：{srt}（先跑 voice）")
     cues = parse_srt(srt)
     if not cues:
         fail("字幕为空")
@@ -401,7 +544,8 @@ def cmd_build(a) -> int:
 
     bgm = pick_bgm(plan.get("topic", "") + plan.get("title", ""), " ".join(plan.get("voiceover", [])),
                    Path(a.bgm_dir or DEFAULT_BGM_DIR), plan.get("bgm", "auto"))
-    final = out / f"成片_{total}秒_客服对口型_{name}.mp4"
+    final = out / (f"成片_{total}秒_客服直出_{name}.mp4" if mode == "native"
+                   else f"成片_{total}秒_客服对口型_{name}.mp4")
     run([sys.executable, str(root / "skills/shared/scripts/video_ops.py"), "bgm",
          "-i", str(subbed), "-o", str(final), "--music", str(bgm),
          "--music-volume", str(plan.get("bgm_volume", DEFAULT_BGM_VOLUME))],
@@ -413,7 +557,13 @@ def cmd_build(a) -> int:
     ok_dur = abs(fd - float(total)) <= 2.0
     ok_res = abs(int(vst["width"]) / int(vst["height"]) - 9 / 16) < 0.02
     print(f"验收：时长={fd:.2f}s {'OK' if ok_dur else 'FAIL'} ｜ 画幅={vst['width']}x{vst['height']} {'OK' if ok_res else 'FAIL'} ｜ 大小={final.stat().st_size//1024}KB {'OK' if ok_size else 'FAIL'}")
-    if not (ok_size and ok_dur and ok_res):
+    checks = [ok_size, ok_dur, ok_res]
+    if mode == "native":
+        mean, mx = vol_stats(final)
+        ok_audio = has_audio(final) and mx > -35 and mean > -45
+        print(f"验收：音轨（原生语音）mean={mean:.1f}dB max={mx:.1f}dB {'OK' if ok_audio else 'FAIL'}")
+        checks.append(ok_audio)
+    if not all(checks):
         fail("验收未通过，不交付")
     print("KEFU_OK")
     return 0
@@ -422,20 +572,24 @@ def cmd_build(a) -> int:
 # ── 一键 ────────────────────────────────────────────────────────────────
 def cmd_all(a) -> int:
     plan = load_plan(Path(a.plan))
+    mode = mode_of(plan)
+    steps = ("image", "direct", "build") if mode == "native" else ("image", "voice", "lipsync", "build")
     if a.dry_run:
-        total = float(plan.get("duration", 15))
+        total = float(plan.get("duration", DEFAULT_DURATION[mode]))
         cost = IMG_PRICE + h3_price(plan.get("resolution", DEFAULT_RES)) * total
-        print(f"[dry-run] 全链路预估 ≈ ￥{cost:.2f}（生图 + H3 对口型 + 云配音；未发起）")
+        print(f"[dry-run] 全链路预估 ≈ ￥{cost:.2f}（mode={mode}：生图 + H3；未发起）")
         return 0
-    for step in ("image", "voice", "lipsync", "build"):
+    table = {"image": cmd_image, "voice": cmd_voice, "lipsync": cmd_lipsync,
+             "direct": cmd_direct, "build": cmd_build}
+    for step in steps:
         print(f"\n──── {step} ────")
         args = argparse.Namespace(plan=a.plan, yes=a.yes, dry_run=False, bgm_dir=a.bgm_dir)
-        {"image": cmd_image, "voice": cmd_voice, "lipsync": cmd_lipsync, "build": cmd_build}[step](args)
+        table[step](args)
     return 0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="kefu · 客服数字人对口型软广全链路：文案/分镜 → 形象图 → 配音 → 对口型 → 字幕BGM 成片")
+    ap = argparse.ArgumentParser(description="kefu · 客服数字人软广全链路：native（H3 直出原生语音，默认）/ dub（配音+对口型）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p0 = sub.add_parser("plan", help="输出链路配置模板 JSON")
@@ -461,6 +615,12 @@ def main() -> int:
     p4.add_argument("--dry-run", action="store_true")
     p4.add_argument("--yes", action="store_true")
     p4.set_defaults(func=cmd_lipsync)
+
+    pd = sub.add_parser("direct", help="H3 multi_image 直出原生语音视频（计费；native 链路）")
+    pd.add_argument("--plan", required=True)
+    pd.add_argument("--dry-run", action="store_true")
+    pd.add_argument("--yes", action="store_true")
+    pd.set_defaults(func=cmd_direct)
 
     p5 = sub.add_parser("build", help="字幕烧录 + BGM → 成片（免费后期）")
     p5.add_argument("--plan", required=True)

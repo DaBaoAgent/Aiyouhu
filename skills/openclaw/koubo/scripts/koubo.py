@@ -447,6 +447,27 @@ def build(a) -> int:
 H3_SIX = ("参考主体", "镜头景别", "主体动作", "场景环境", "光线风格", "画质约束")
 H3_PRICE = {"480p": 0.04, "768p": 0.06, "1080p": 0.10}   # ¥/秒
 H3_MAX_SEG = 10                                            # H3 单段上限（秒）
+# 折展切换：折叠↔展开任一方向的动作词（排除「折叠态/展开态/折叠后」等静态/回指）
+STATE_FLIP_RE = re.compile(r"(折叠(?!态|后|好)|展开(?!态|后)|折成|收拢|收好|收起|折起)")
+STATE_FLIP_RULE = "折叠与展开状态切换全程 0.3 秒内一气呵成"   # 两方向通用（2026-10-09 用户定）
+
+
+def _with_state_flip(text: str) -> str:
+    """含折展切换的「主体动作」自动补写 0.3 秒约束；已写明（含 0.3）则不重复。"""
+    t = str(text or "").strip().rstrip("。；，、,;. ")
+    if not t or "0.3" in t:
+        return t
+    if STATE_FLIP_RE.search(t):
+        return f"{t}，{STATE_FLIP_RULE}"
+    return t
+
+
+def _seg_prompt(seg: dict) -> dict:
+    """返回段提示词的副本，并对「主体动作」应用状态切换 0.3 秒约束。"""
+    pr = dict(seg.get("prompt") or {})
+    if pr.get("主体动作"):
+        pr["主体动作"] = _with_state_flip(pr["主体动作"])
+    return pr
 
 
 def _slug(text: str, n: int = 8) -> str:
@@ -464,8 +485,9 @@ def load_plan(path: Path) -> dict:
 
 
 def h3_prompt_line(seg: dict) -> str:
-    """把六段式字段拼成单行提示词；含破折号直接拦（H3 会丢弃整句）。"""
-    pr = seg.get("prompt") or {}
+    """把六段式字段拼成单行提示词；含破折号直接拦（H3 会丢弃整句）。
+    含「折叠 ↔ 展开」切换的段会自动补写「0.3 秒内一气呵成」（两个方向都适用）。"""
+    pr = _seg_prompt(seg)
     fields = []
     for k in H3_SIX:
         v = str(pr.get(k, "")).strip().rstrip("。；，,;. ")
@@ -486,7 +508,7 @@ def plan_segments(plan: dict) -> list[dict]:
     for s in segs:
         d = int(s.get("duration", 0))
         if not (1 <= d <= H3_MAX_SEG):
-            fail(f"第 {s.get('id', '?')} 段 {d}s 超出 H3 单段 1–{H3_MAX_SEG}s（15s 请拆 8+7 两段）")
+            fail(f"第 {s.get('id', '?')} 段 {d}s 超出 H3 单段 1–{H3_MAX_SEG}s（建议每段 4s，如 12s 拆 3 段）")
     return segs
 
 
@@ -534,7 +556,7 @@ def write_h3_doc(root: Path, plan: dict) -> Path:
     for s in segs:
         L += [f"### Clip {s.get('id', '?')}｜{s.get('shots', '')}｜{int(s['duration'])}s", "",
               "**六段式提示词**", ""]
-        pr = s.get("prompt") or {}
+        pr = _seg_prompt(s)
         for i, k in enumerate(H3_SIX, 1):
             L.append(f"{i}. **{k}**：{str(pr.get(k, '')).strip()}")
         L += ["", f"**参考图**：{', '.join(s.get('refs', [])) or '—'}",
@@ -555,29 +577,48 @@ def write_h3_doc(root: Path, plan: dict) -> Path:
           f"- [ ] 拼接后总时长 {total}s±1s、竖屏 9:16、文件 >1MB（脚本内置 ffprobe 验收）",
           "- [ ] 人物与产品跨段一致（同车型、同配色），不一致带意见重跑一次",
           "- [ ] 提示词无破折号「——」、无电子文字/字幕描述",
+          "- [ ] 折展段「主体动作」写明状态起止 + 折叠↔展开任一方向均「0.3 秒内一气呵成」",
+          "- [ ] 折展/移动场景已给两张参考图（展开态+折叠态 / 45°+侧面）",
           "- [ ] 合规：无医疗宣称、无「最/第一/100%」绝对化用语、不演示危险场景，老人场景含安全提示", ""]
     doc = out / f"H3视频提示词_{name}.md"
     doc.write_text("\n".join(L), encoding="utf-8")
     return doc
 
 
-def _run_h3gen(root: Path, plan: dict, dry_run: bool, yes: bool) -> Path:
+def _seg_output(assets: Path, s: dict) -> Path:
+    return assets / f"clip{s.get('id', '?')}_{_slug(s.get('shots', ''))}.mp4"
+
+
+def _run_h3gen(root: Path, plan: dict, dry_run: bool, yes: bool,
+               only: set[int] | None = None, skip_existing: bool = False,
+               fit: bool = False) -> Path:
+    """生成各分段并拼接。--only 只跑指定段；--skip-existing 跳过已有段；--fit 拼接前把每段裁到目标秒数。"""
     segs = plan_segments(plan)
     res = plan.get("resolution", "768p竖")
     total = plan_total(plan)
-    cost = h3_price(res) * total
-    print(f"H3 两段式：{len(segs)} 段 / 共 {total}s / {res} → 预估约 ¥{cost:.2f}")
+    assets = plan_assets(root, plan)
+    todo = []
+    for s in segs:
+        out = _seg_output(assets, s)
+        if only and int(s.get("id", 0)) not in only:
+            continue
+        if skip_existing and out.is_file() and out.stat().st_size > 0:
+            continue
+        todo.append(s)
+    cost = h3_price(res) * sum(int(s["duration"]) for s in todo)
+    picked = "、".join(str(s.get("id", "?")) for s in todo) or "无"
+    print(f"H3 分段：{len(segs)} 段 / 共 {total}s / {res} → 本次生成 {len(todo)} 段（{picked}）预估约 ¥{cost:.2f}")
     if dry_run:
+        for s in todo:
+            print(f"  · Clip {s.get('id', '?')} {int(s['duration'])}s")
         print("--dry-run：未提交。确认后加 --yes 真正生成。")
         return plan_source_video(root, plan)
-    if not yes:
+    if todo and not yes:
         fail(f"H3 按量计费（预估 ¥{cost:.2f}）：确认后加 --yes 再跑，或先 --dry-run 看预估。", 3)
-    assets = plan_assets(root, plan)
     h3 = root / "skills/openclaw/autodl-h3-video/scripts/h3_video.py"
     if not h3.is_file():
         fail(f"找不到 H3 脚本：{h3}")
-    clips = []
-    for s in segs:
+    for s in todo:
         refs: list[str] = []
         for r in s.get("refs", []):
             p = Path(r)
@@ -587,19 +628,34 @@ def _run_h3gen(root: Path, plan: dict, dry_run: bool, yes: bool) -> Path:
             if not p.is_file():
                 fail(f"参考图不存在：{r}")
             refs += ["-i", str(p)]
-        out = assets / f"clip{s.get('id', '?')}_{_slug(s.get('shots', ''))}.mp4"
+        out = _seg_output(assets, s)
+        out.unlink(missing_ok=True)                      # 重跑该段：清掉旧文件与状态，确保真正重新生成
+        Path(str(out) + ".state.json").unlink(missing_ok=True)
         print(f"→ Clip {s.get('id', '?')} {int(s['duration'])}s …")
         run([sys.executable, str(h3), "-w", plan.get("workflow", "multi_image"),
              "--prompt", h3_prompt_line(s), *refs, "-r", res, "-d", str(int(s["duration"])),
              "-o", str(out)], cwd=root)
-        clips.append(out)
+    clips = [_seg_output(assets, s) for s in segs]
+    if fit:
+        for s, c in zip(segs, clips):
+            want = int(s["duration"])
+            if c.is_file() and dur(c) > want + 0.05:
+                tmp = c.with_suffix(".fit.mp4")
+                run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(c),
+                     "-t", str(want), "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-an", str(tmp)],
+                    cwd=root)
+                tmp.replace(c)
+                print(f"  · Clip {s.get('id', '?')} 裁到 {want}s（原 {dur(c):.2f}s）")
+    missing = [c.name for c in clips if not c.is_file() or c.stat().st_size == 0]
+    if missing:
+        fail(f"拼接前缺少分段文件：{'、'.join(missing)}（用 --only N 补跑该段）")
     src = plan_source_video(root, plan)
     if len(clips) == 1:
         shutil.copyfile(clips[0], src)
     else:
         run([sys.executable, str(root / "skills/shared/scripts/video_ops.py"), "concat",
-             *[x for c in clips for x in ("-i", str(c))], "-o", str(src)],
-            cwd=root, ok_msg=f"两段拼接完成 → {src.name}")
+             "-i", *[str(c) for c in clips], "-o", str(src)],
+            cwd=root, ok_msg=f"分段拼接完成 → {src.name}")
     return src
 
 
@@ -613,17 +669,21 @@ def cmd_plan_template(a) -> int:
         "platform": ["抖音", "视频号"],
         "workflow": "multi_image",
         "resolution": "768p竖",
-        "duration": 15.65,
+        "duration": 12.0,
         "copy": {"titles": ["备选1", "备选2"], "body": "视频配文", "cta": ["行动引导"],
                  "tags": ["#话题"]},
         "voiceover": ["口播第 1 句。", "口播第 2 句。"],
         "segments": [
-            {"id": 1, "duration": 8, "shots": "痛点引入 + 产品出场",
-             "refs": ["产品主体.jpg", "侧面结构.png"],
+            {"id": 1, "duration": 4, "shots": "痛点引入 + 产品出场",
+             "refs": ["展开态.png"],
              "prompt": {k: "" for k in H3_SIX},
              "voiceover": "本段对应口播"},
-            {"id": 2, "duration": 7, "shots": "折叠演示 + 场景收尾",
-             "refs": ["折叠形态.png"],
+            {"id": 2, "duration": 4, "shots": "三步折叠演示",
+             "refs": ["展开态.png", "折叠态.png"],
+             "prompt": {k: "" for k in H3_SIX},
+             "voiceover": "本段对应口播"},
+            {"id": 3, "duration": 4, "shots": "折叠态对比 + 收尾",
+             "refs": ["折叠态.png"],
              "prompt": {k: "" for k in H3_SIX},
              "voiceover": "本段对应口播"},
         ],
@@ -645,7 +705,9 @@ def cmd_h3plan(a) -> int:
 
 
 def cmd_h3gen(a) -> int:
-    _run_h3gen(find_root(), load_plan(Path(a.plan)), a.dry_run, a.yes)
+    only = {int(x) for x in str(a.only).split(",")} if getattr(a, "only", None) else None
+    _run_h3gen(find_root(), load_plan(Path(a.plan)), a.dry_run, a.yes, only,
+               getattr(a, "skip_existing", False), getattr(a, "fit", False))
     return 0
 
 
@@ -653,7 +715,9 @@ def cmd_all(a) -> int:
     root = find_root()
     plan = load_plan(Path(a.plan))
     write_h3_doc(root, plan)
-    _run_h3gen(root, plan, a.dry_run, a.yes)
+    only = {int(x) for x in str(a.only).split(",")} if getattr(a, "only", None) else None
+    _run_h3gen(root, plan, a.dry_run, a.yes, only, getattr(a, "skip_existing", False),
+               getattr(a, "fit", False))
     if a.dry_run:
         print("--dry-run：H3 与后期均未执行。")
         return 0
@@ -699,16 +763,22 @@ def main() -> int:
     hp.add_argument("--plan", required=True)
     hp.set_defaults(func=cmd_h3plan)
 
-    hg = sub.add_parser("h3gen", help="调 H3 生成两段并拼接为原片（按量计费）")
+    hg = sub.add_parser("h3gen", help="调 H3 生成各分段并拼接为原片（按量计费）")
     hg.add_argument("--plan", required=True)
     hg.add_argument("--dry-run", action="store_true", help="只打印预估费用，不提交")
     hg.add_argument("--yes", action="store_true", help="确认付费并执行")
+    hg.add_argument("--only", default=None, help="只生成这些段（逗号分隔，如 2 或 1,3），用于单段重跑")
+    hg.add_argument("--skip-existing", action="store_true", help="跳过已有有效分段，只补缺失段")
+    hg.add_argument("--fit-duration", dest="fit", action="store_true", help="拼接前把每段裁到 plan 的目标秒数（精确总时长）")
     hg.set_defaults(func=cmd_h3gen)
 
-    al = sub.add_parser("all", help="全链路：H3 两段生成拼接 → 配音字幕BGM 成片")
+    al = sub.add_parser("all", help="全链路：H3 分段生成拼接 → 配音字幕BGM 成片")
     al.add_argument("--plan", required=True)
     al.add_argument("--dry-run", action="store_true", help="只打印预估，不提交、不出片")
     al.add_argument("--yes", action="store_true", help="确认付费并执行")
+    al.add_argument("--only", default=None, help="只生成这些段（逗号分隔），用于单段重跑")
+    al.add_argument("--skip-existing", action="store_true", help="跳过已有有效分段，只补缺失段")
+    al.add_argument("--fit-duration", dest="fit", action="store_true", help="拼接前把每段裁到 plan 的目标秒数")
     al.add_argument("--tries", type=int, default=DEFAULT_TRIES)
     al.add_argument("--reuse-parts", action="store_true")
     al.set_defaults(func=cmd_all)

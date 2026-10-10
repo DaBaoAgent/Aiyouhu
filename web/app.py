@@ -436,7 +436,8 @@ AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """应用生命周期：关机时回收公众号扫码进程（替代已弃用的 on_event）。"""
+    """应用生命周期：启动时收尾上一进程遗留的孤儿轮次；关机时回收公众号扫码进程。"""
+    _reconcile_orphan_turns()
     yield
     _stop_mp_login_on_shutdown()
 
@@ -2305,6 +2306,61 @@ def _save_turn(sk: str, status: str, text: str, extra: dict | None = None) -> No
         tmp = _turn_file(sk).with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, _turn_file(sk))
+    except Exception:
+        pass
+
+
+def _append_terminal_job_event(turn_id: str, sk: str, note: str = "") -> None:
+    """给没有终止事件的任务日志补收尾（token + done），让重连的 SSE 能正常结束。
+
+    孤儿轮次（web 进程被杀，supervisor 随之消失）的 job 日志只写了前几条 activity 就断了；
+    前端刷新后按 pendingTurnId 重连该 job 的 SSE，永远只收到 ping → 界面永久「正在思考…」。
+    这里补一个终止事件即可让前端自愈（App.tsx resumePendingTurn 收到 done 后收尾清流）。
+    """
+    try:
+        path = _job_event_file(turn_id)
+        if not turn_id or not path.is_file():
+            return
+        lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        events = []
+        for ln in lines:
+            try:
+                events.append(json.loads(ln))
+            except ValueError:
+                continue
+        if any(e.get("event") in ("done", "error") for e in events):
+            return
+        seq = max((int(e.get("id", 0)) for e in events), default=0)
+        out = list(lines)
+        if note:
+            seq += 1
+            out.append(json.dumps({"id": seq, "event": "token", "data": note}, ensure_ascii=False))
+        seq += 1
+        out.append(json.dumps({"id": seq, "event": "done", "data": {"sessionKey": sk}}, ensure_ascii=False))
+        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _reconcile_orphan_turns() -> None:
+    """启动时收尾上一进程遗留的 status=running 轮次（web 被杀时 supervisor 一起消失）。
+
+    不修的话：turn 快照永远 running、job 日志没有终止事件 → 每次刷新都重连到一个永远不会
+    结束的 SSE，界面永久「正在思考…」（体感＝前端卡死，且重启进程也治不好）。
+    """
+    note = "（上一轮在我重启时被中断，已收尾。请重发上一条消息。）"
+    try:
+        for f in SESSIONS_DIR.glob("web_*.json"):
+            try:
+                payload = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if payload.get("status") != "running":
+                continue
+            sk = f"web:{f.stem[len('web_'):]}"
+            turn_id = payload.get("turn_id")
+            _append_terminal_job_event(str(turn_id or ""), sk, note)
+            _save_turn(sk, "done", note, {"turn_id": turn_id, "clean_end": False, "orphan": True})
     except Exception:
         pass
 
